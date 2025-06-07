@@ -57,7 +57,7 @@ def parse_research_results(results: List[Dict[str, Any]]) -> Tuple[List[str], Li
     return contexts, sources
 
 def format_sources_section(sources: List[Dict[str, str]]) -> str:
-    """Format the sources section of the response"""
+    """Format the sources section of the response with proper markdown"""
     sources_section = "\n\n## Sources Cited\n\n"
     
     if not sources:
@@ -76,4 +76,6 @@ def format_sources_section(sources: List[Dict[str, str]]) -> str:
         for idx, source in enumerate(articles, 1):
             sources_section += f"{idx}. [{source['title']}]({source['url']}) - {source['date']}\n"
             
+    # Add line break after sources section
+    sources_section += "\n"
     return sources_section
