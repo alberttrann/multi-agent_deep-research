@@ -12,8 +12,10 @@ class BaseAgent:
                  openrouter_model: Optional[str] = None, gemini_model: Optional[str] = None):
         self.use_gemini = use_gemini
         if use_gemini:
+            if not api_key:
+                raise ValueError("Gemini API key is required when use_gemini=True")
             genai.configure(api_key=api_key)
-            self.gemini_model = gemini_model or "gemini-pro"
+            self.gemini_model = gemini_model or "gemini-1.5-pro"  # Use a good default model
         else:
             self.openrouter_client = OpenAI(
                 base_url="https://openrouter.ai/api/v1",
@@ -25,7 +27,7 @@ class BaseAgent:
         try:
             model = genai.GenerativeModel(model_name=self.gemini_model)
             # Combine system prompt and user prompt for Gemini
-            combined_prompt = f"{system_prompt}\n\nUser request: {prompt}"
+            combined_prompt = f"System: {system_prompt}\n\nUser: {prompt}"
             response = model.generate_content(
                 combined_prompt,
                 generation_config=genai.types.GenerationConfig(
@@ -98,7 +100,7 @@ class OrchestratorAgent(BaseAgent):
 
     def evaluate_research_progress(self, plan: Dict[str, List[str]], gathered_info: List[str]) -> Dict[str, bool]:
         """Evaluate if we have enough information for each aspect of the plan"""
-        prompt = f"""Based on the research plan and gathered information, evaluate if we have sufficient information for each aspect.
+        prompt = f"""Analyze the research plan and gathered information to evaluate completeness.
 
         Research Plan:
         {json.dumps(plan, indent=2)}
@@ -106,97 +108,194 @@ class OrchestratorAgent(BaseAgent):
         Gathered Information:
         {chr(10).join(gathered_info)}
 
-        Return a JSON object indicating completeness for each aspect:
+        Your task: Return a STRICTLY FORMATTED JSON object with only three boolean fields indicating whether the gathered information adequately covers each aspect. Do not include any other text, explanation, or comments.
+
+        Required exact output format (with true/false values):
         {{
-            "core_concepts": true/false,
-            "key_questions": true/false,
-            "information_requirements": true/false
+            "core_concepts": false,
+            "key_questions": false,
+            "information_requirements": false
         }}
-        Only return true if the gathered information adequately covers that aspect."""
+
+        Rules:
+        - Set a field to true ONLY if the gathered information thoroughly covers that aspect
+        - Return ONLY the JSON object, no other text
+        - Must be valid JSON parseable by json.loads()"""
 
         response = self.generate(prompt, self.system_prompt)
         try:
-            cleaned_response = response.strip().replace('```json', '').replace('```', '').strip()
-            return json.loads(cleaned_response)
-        except:
+            # Remove any leading/trailing whitespace and quotes
+            cleaned_response = response.strip().strip('"').strip()
+            # Remove any markdown code block formatting
+            cleaned_response = cleaned_response.replace('```json', '').replace('```', '').strip()
+            
+            # Parse and validate the response has the correct structure
+            parsed = json.loads(cleaned_response)
+            required_keys = {"core_concepts", "key_questions", "information_requirements"}
+            if not all(isinstance(parsed.get(key), bool) for key in required_keys):
+                raise ValueError("Response missing required boolean fields")
+            
+            return parsed
+        except Exception as e:
             logger.error(f"Failed to parse evaluation response: {response}")
-            return {"core_concepts": False, "key_questions": False, "information_requirements": False}
+            # Return a default response indicating no completeness
+            return {
+                "core_concepts": False,
+                "key_questions": False,
+                "information_requirements": False
+            }
 
 class PlannerAgent(BaseAgent):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.system_prompt = """You are an expert research planner that creates targeted search strategies.
-        Create specific, focused search queries that will yield relevant information for each research objective.
-        Your queries must be simple text strings without any special formatting or structure."""
+        Your role is to identify the key aspects that need deep investigation, focusing on quality over quantity.
+        Create research plans that encourage thorough exploration of important concepts rather than shallow coverage of many topics."""
 
     def create_search_strategy(self, research_item: str, item_type: str) -> List[str]:
         """Create targeted search queries based on the type of research item"""
-        prompt = f"""Create 2-3 focused search queries for this {item_type}: {research_item}
+        prompt = f"""Create 2-3 highly specific search queries for this {item_type}: {research_item}
         
-        Guidelines based on type:
-        - For core_concepts: Focus on definitions, explanations, and foundational understanding
-        - For key_questions: Focus on finding specific answers and examples
-        - For information_requirements: Focus on detailed technical information and data
+        Focus on Depth:
+        - Start with foundational understanding
+        - Build up to technical specifics and implementation details
+        - Look for real-world examples and case studies
+        - Find comparative analyses and benchmarks
+        - Seek out critical discussions and limitations
         
-        Return ONLY a JSON array of simple search query strings. Examples:
-        ["what is transformer architecture", "transformer architecture explained", "attention mechanism in transformers"]
+        Guidelines:
+        - Prefer fewer, more focused queries over many broad ones
+        - Each query should build on previous knowledge
+        - Target high-quality technical sources
+        - Look for detailed explanations rather than surface-level overviews
         
-        Make queries specific and relevant, but keep them as simple text strings."""
+        Return ONLY a JSON array of 2-3 carefully crafted search queries that will yield deep technical information.
+        Make each query highly specific and targeted."""
         
         response = self.generate(prompt, self.system_prompt)
         try:
             cleaned_response = response.strip().replace('```json', '').replace('```', '').strip()
             queries = json.loads(cleaned_response)
-            # Ensure we return strings only and limit to 3 queries
             return [str(q) for q in queries[:3]]
         except:
             logger.error(f"Failed to parse search queries: {response}")
             return [str(research_item)]
 
-    def prioritize_unfulfilled_requirements(self, plan: Dict[str, List[str]], progress: Dict[str, bool]) -> List[tuple]:
-        """Create a prioritized list of remaining research needs"""
+    def prioritize_unfulfilled_requirements(self, plan: Dict[str, List[str]], progress: Dict[str, bool], gathered_info: List[str] = None) -> List[tuple]:
+        """Create a prioritized list of remaining research needs with depth checking"""
         items = []
         
-        # First priority: unfulfilled core concepts
-        if not progress["core_concepts"]:
-            items.extend([("core_concepts", item) for item in plan["core_concepts"]])
+        def has_sufficient_depth(topic: str, info: List[str]) -> bool:
+            if not info:
+                return False
             
-        # Second priority: key questions
+            # Count substantial mentions (more than just a passing reference)
+            substantial_mentions = 0
+            for text in info:
+                topic_words = set(topic.lower().split())
+                text_lower = text.lower()
+                
+                # Check if the text contains multiple topic keywords
+                keyword_matches = sum(1 for word in topic_words if word in text_lower)
+                
+                # Check for substantial content (contains multiple keywords and is detailed)
+                if keyword_matches >= 2 and len(text) > 300:
+                    substantial_mentions += 1
+                
+            # Require multiple substantial mentions
+            return substantial_mentions >= 2
+        
+        # First priority: core concepts without sufficient depth
+        if not progress["core_concepts"]:
+            for item in plan["core_concepts"]:
+                if not gathered_info or not has_sufficient_depth(item, gathered_info):
+                    items.append(("core_concepts", item))
+            
+        # Second priority: key questions without sufficient answers
         if not progress["key_questions"]:
-            items.extend([("key_questions", item) for item in plan["key_questions"]])
+            for item in plan["key_questions"]:
+                if not gathered_info or not has_sufficient_depth(item, gathered_info):
+                    items.append(("key_questions", item))
             
         # Third priority: detailed information requirements
         if not progress["information_requirements"]:
-            items.extend([("information_requirements", item) for item in plan["information_requirements"]])
+            for item in plan["information_requirements"]:
+                if not gathered_info or not has_sufficient_depth(item, gathered_info):
+                    items.append(("information_requirements", item))
         
         return items
 
 class ReportAgent(BaseAgent):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.system_prompt = """You are an expert technical writer that creates comprehensive, 
-        well-structured research reports. Synthesize the provided information based on the research plan 
-        and create a coherent narrative that thoroughly answers the original query."""
+        self.system_prompt = """You are an expert technical writer and researcher that creates 
+        comprehensive, well-structured research reports. Your primary focus is on deep analysis,
+        synthesis of information, and meaningful organization of content.
+        
+        Key Principles:
+        1. Quality over Quantity - Focus on depth and insight rather than filling sections
+        2. Natural Organization - Let the content guide the structure instead of forcing a rigid outline
+        3. Meaningful Connections - Draw relationships between different pieces of information
+        4. Critical Analysis - Question assumptions and evaluate trade-offs
+        5. Evidence-Based - Support claims with specific technical details and examples"""
 
-    def generate_report(self, query: str, research_plan: Dict[str, List[str]], research_results: List[str]) -> str:
-        prompt = f"""Query: {query}
+    def generate_report(self, query: str, research_plan: Dict[str, List[str]], 
+                       research_results: List[str], completion_stats: Dict[str, Any]) -> str:
+        prompt = f"""Generate a comprehensive technical report that synthesizes the research findings into a cohesive narrative.
+
+        Query: {query}
 
         Research Plan:
         {json.dumps(research_plan, indent=2)}
 
+        Research Coverage:
+        {json.dumps(completion_stats, indent=2)}
+
         Research Findings:
         {chr(10).join(research_results)}
 
-        Generate a comprehensive technical report that:
-        1. Follows the structure of the research plan
-        2. Addresses each core concept thoroughly
-        3. Answers all key questions identified
-        4. Provides detailed analysis based on the information requirements
-        5. Uses clear section headings following the research priorities
-        6. Synthesizes information into a coherent narrative
-        7. Supports claims with specific evidence from the research
-        8. Identifies any remaining gaps or uncertainties
+        Report Requirements:
 
-        Format the report with clear section headings and ensure it flows logically."""
+        1. Organization:
+           - Start with a clear introduction that frames the topic
+           - Group related concepts together naturally
+           - Only create sections when there's enough substantial content
+           - Use appropriate heading levels (# for h1, ## for h2, etc.)
+           - Maintain a logical flow of ideas
+
+        2. Content Development:
+           - Focus on in-depth analysis of important concepts
+           - Provide concrete examples and technical details
+           - Compare and contrast different approaches
+           - Discuss real-world implications
+           - Acknowledge limitations and trade-offs
+
+        3. Synthesis & Analysis:
+           - Draw meaningful connections between different sources
+           - Evaluate conflicting information
+           - Identify patterns and trends
+           - Provide reasoned analysis supported by evidence
+           - Offer insights beyond just summarizing sources
+
+        4. Technical Accuracy:
+           - Use precise technical language
+           - Include relevant code examples with language tags
+           - Provide performance metrics when available
+           - Explain technical concepts clearly
+           - Support technical claims with evidence
+
+        5. Formatting:
+           - Use proper markdown formatting
+           - Include code blocks with language tags when relevant
+           - Format lists and tables appropriately
+           - Add line breaks between sections
+           - Ensure consistent formatting throughout
+
+        Important:
+        - Do NOT create sections just to fill a structure
+        - Combine related information even if it came from different parts of the research plan
+        - Focus on providing meaningful insights rather than covering every possible aspect
+        - Only include information that contributes to understanding the topic
+        - Skip sections or topics where there isn't enough substantive content"""
         
         return self.generate(prompt, self.system_prompt)
