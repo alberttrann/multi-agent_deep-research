@@ -1,4 +1,4 @@
-# Multi-Agent Research System (MCP)
+# Multi-Agent Research System 
 
 A powerful research assistant system that leverages multiple AI agents to conduct comprehensive technical research and generate detailed reports. The system combines web search capabilities with advanced language models to create well-structured, thoroughly-researched content.
 
