@@ -364,8 +364,3 @@ Benchmarks reveal no universal "winner"—throughput, latency, and consistency f
 39. [Disk-Spill vs. In-Memory Processing: Trade-offs and Considerations](https://www.researchgate.net/publication/390493804_Disk-Spill_vs_In-Memory_Processing_Trade-offs_and_Considerations/download)
 40. [Vector databases (4): Analyzing the trade-offs - The Data Quarry](https://thedataquarry.com/blog/vector-db-4)
 41. [The Latency/Throughput Tradeoff: Why Fast Services Are Slow And ...](https://blog.danslimmon.com/2019/02/26/the-latency-throughput-tradeoff-why-fast-services-are-slow-and-vice-versa/)
-
----------------
-BACKEND LOG:
-
-
