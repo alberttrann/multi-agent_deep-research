@@ -80,9 +80,13 @@ class MultiAgentSystem:
             # Step 2: Initialize research process
             all_search_results = []
             MAX_SEARCHES_TOTAL = 30  # Total search limit
-            MIN_RESULTS_PER_ITEM = 2  # Minimum results before checking progress
+            MIN_RESULTS_PER_ITEM = 3  # Minimum results before checking progress
+            MAX_ATTEMPTS_PER_ITEM = 2  # Maximum attempts to research each item
             search_count = 0
             seen_urls = set()  # Track seen URLs to avoid duplicates
+            
+            # Track research attempts for each item to prevent loops
+            research_attempts = {}
             
             # Step 3: Conduct initial research
             while search_count < MAX_SEARCHES_TOTAL:
@@ -92,22 +96,36 @@ class MultiAgentSystem:
                 
                 # Check if we have completed all aspects
                 if all(progress.values()):
-                    server_logger.info("Research complete - all aspects covered")
+                    server_logger.info("Research complete - all aspects covered with sufficient depth")
                     break
                 
                 # Get prioritized list of unfulfilled research needs
-                remaining_items = self.planner.prioritize_unfulfilled_requirements(research_plan, progress)
+                remaining_items = self.planner.prioritize_unfulfilled_requirements(
+                    research_plan, 
+                    progress,
+                    current_results
+                )
+                
                 if not remaining_items:
                     break
                 
                 # Research each remaining item
                 for item_type, research_item in remaining_items:
+                    # Check if we've exceeded attempts for this item
+                    item_key = f"{item_type}:{research_item}"
+                    if research_attempts.get(item_key, 0) >= MAX_ATTEMPTS_PER_ITEM:
+                        server_logger.info(f"Reached maximum attempts for {item_key}")
+                        continue
+                    
                     if search_count >= MAX_SEARCHES_TOTAL:
                         server_logger.info(f"Reached maximum total searches ({MAX_SEARCHES_TOTAL})")
                         break
                     
                     server_logger.info(f"Researching {item_type}: {research_item}")
                     search_queries = self.planner.create_search_strategy(research_item, item_type)
+                    
+                    # Track this research attempt
+                    research_attempts[item_key] = research_attempts.get(item_key, 0) + 1
                     
                     # Conduct searches for this item
                     item_results = []
@@ -123,19 +141,29 @@ class MultiAgentSystem:
                         server_logger.info(f"Searching for: {query_str}")
                         results = self.web_search(query_str)
                         
-                        # Deduplicate results based on URL
+                        # Deduplicate and filter results
                         new_results = []
                         for result in results:
                             url = result.get('url')
-                            if url and url not in seen_urls:
+                            content = result.get('content', '').strip()
+                            
+                            # Skip if URL seen or content too short
+                            if not url or url in seen_urls or len(content) < 100:
+                                continue
+                                
+                            # Check if content is relevant to the research item
+                            if any(keyword.lower() in content.lower() 
+                                  for keyword in research_item.lower().split()):
                                 seen_urls.add(url)
                                 new_results.append(result)
                         
                         item_results.extend(new_results)
                         search_count += 1
                         
-                        # Check if we have enough results for this item
-                        if len(item_results) >= MIN_RESULTS_PER_ITEM:
+                        # Check if we have enough detailed results for this item
+                        if len(item_results) >= MIN_RESULTS_PER_ITEM and all(
+                            len(r.get('content', '')) > 200 for r in item_results
+                        ):
                             break
                     
                     all_search_results.extend(item_results)
@@ -143,10 +171,20 @@ class MultiAgentSystem:
             # Step 4: Generate final report
             server_logger.info("Generating final report...")
             contexts, sources = parse_research_results(all_search_results)
+            
+            # Add research completion statistics
+            completion_stats = {
+                "total_searches": search_count,
+                "unique_sources": len(seen_urls),
+                "research_coverage": {k: v for k, v in progress.items()}
+            }
+            server_logger.info(f"Research stats: {json.dumps(completion_stats, indent=2)}")
+            
             report = self.report_agent.generate_report(
                 query=query,
                 research_plan=research_plan,
-                research_results=contexts
+                research_results=contexts,
+                completion_stats=completion_stats
             )
             
             # Add sources section to the report
@@ -190,9 +228,12 @@ def create_interface():
     """
 
     with gr.Blocks(title="Multi-Agent Research System", css=css) as interface:
-        gr.Markdown("""# Multi-Agent Research System
-        This system uses multiple AI agents to perform comprehensive research and analysis.
-        Please provide your API keys to begin.""")
+        gr.Markdown(
+            """# Multi-Agent Research System
+            
+            This system uses multiple AI agents to perform comprehensive research and analysis.
+            Please provide your API keys to begin."""
+        )
 
         # Progress tracking container with minimize button
         with gr.Row(elem_classes="log-container"):
@@ -287,17 +328,17 @@ def create_interface():
             try:
                 if not tavily_key:
                     server_logger.error("Missing Tavily API key")
-                    return "", "Please provide a Tavily API key for web search capability."
+                    return gr.update(value="Error: Missing Tavily API key"), "Please provide a Tavily API key for web search capability."
                 
                 if api_type == "Gemini" and not gemini_key:
                     server_logger.error("Missing Gemini API key")
-                    return "", "Please provide a Gemini API key when using Gemini mode."
+                    return gr.update(value="Error: Missing Gemini API key"), "Please provide a Gemini API key when using Gemini mode."
                     
                 if api_type == "OpenRouter" and not openrouter_key:
                     server_logger.error("Missing OpenRouter API key")
-                    return "", "Please provide an OpenRouter API key when using OpenRouter mode."
+                    return gr.update(value="Error: Missing OpenRouter API key"), "Please provide an OpenRouter API key when using OpenRouter mode."
 
-                # Initialize handlers for console output capture
+                # Initialize log capture
                 class LogCaptureHandler(logging.Handler):
                     def __init__(self):
                         super().__init__()
@@ -306,14 +347,13 @@ def create_interface():
                     def emit(self, record):
                         msg = self.format(record)
                         self.logs.append(msg)
-                        # Return update instead of trying to update directly
                         return gr.update(value="\n".join(self.logs))
 
-                # Add handler to capture logs
                 log_handler = LogCaptureHandler()
                 log_handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
                 server_logger.addHandler(log_handler)
 
+                # Initialize system and run query
                 system = MultiAgentSystem(
                     use_gemini=(api_type == "Gemini"),
                     gemini_api_key=gemini_key if api_type == "Gemini" else None,
@@ -323,17 +363,16 @@ def create_interface():
                     openrouter_model=openrouter_model if api_type == "OpenRouter" else None
                 )
 
-                # Run research
                 result = system.process_query(query)
-                
-                # Clean up log handler and return logs with gr.update()
                 server_logger.removeHandler(log_handler)
                 return gr.update(value="\n".join(log_handler.logs)), result
-                
+
             except Exception as e:
                 server_logger.error(f"Research failed: {str(e)}", exc_info=True)
-                return gr.update(value=f"ERROR: Research failed: {str(e)}"), f"Research failed: {str(e)}"
+                error_msg = f"ERROR: Research failed: {str(e)}"
+                return gr.update(value=error_msg), error_msg
 
+        # Connect event handlers
         api_type.change(
             fn=update_api_visibility,
             inputs=[api_type],
@@ -342,7 +381,10 @@ def create_interface():
 
         submit_btn.click(
             fn=run_research,
-            inputs=[query_input, api_type, gemini_key, gemini_model, tavily_key, openrouter_key, openrouter_model],
+            inputs=[
+                query_input, api_type, gemini_key, gemini_model, 
+                tavily_key, openrouter_key, openrouter_model
+            ],
             outputs=[progress_output, output],
             show_progress="full"
         )
@@ -360,12 +402,20 @@ def create_interface():
 
 if __name__ == "__main__":
     try:
+        # Configure event loop policy for Windows
+        if os.name == 'nt':  # Windows
+            import asyncio
+            import sys
+            if sys.version_info[0] == 3 and sys.version_info[1] >= 8:
+                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
         server_logger.info("Starting Gradio server")
         interface = create_interface()
         interface.launch(
             server_name="0.0.0.0",
             share=False,
-            debug=True
+            debug=True,
+            prevent_thread_lock=True,  # Allow for proper cleanup
         )
     except Exception as e:
         server_logger.error(f"Failed to start Gradio server: {str(e)}", exc_info=True)
