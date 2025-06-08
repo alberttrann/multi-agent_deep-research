@@ -149,7 +149,7 @@ Logs are stored in the logs directory with:
 mcp/
 ├── agents.py           # Agent implementations
 ├── mcp_server.py      # Web interface server
-├── mcp_client.py      # CLI client
+├── mcp_client.py      # CLI client(Future updates)
 ├── utils.py           # Utility functions
 ├── logger_config.py   # Logging configuration
 ├── requirements.txt   # Dependencies
