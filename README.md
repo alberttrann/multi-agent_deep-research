@@ -34,8 +34,8 @@ A powerful research assistant system that leverages multiple AI agents to conduc
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/mcp.git
-cd mcp
+git clone https://github.com/alberttrann/multi-agent_deep-research.git
+
 
 # Create and activate virtual environment (optional but recommended)
 python -m venv .venv
