@@ -146,7 +146,7 @@ MIN_CONTENT_LENGTH = 200     # Minimum content length in chars
 1. Clone the repository:
 ```bash
 git clone https://github.com/alberttrann/multi-agent_deep-researcher.git
-cd multi-agent_deep-researcher
+cd multi-agent
 ```
 
 2. Create and activate a virtual environment:
