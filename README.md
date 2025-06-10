@@ -591,7 +591,7 @@ INFO - Research stats: {
 }
 ```
 
-- Full Report:
+- **FULL REPORT:**
 
 # Ethical and Societal Implications of AI in Critical Decision-Making
 
