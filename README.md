@@ -6,6 +6,8 @@ A sophisticated multi-agent system for conducting in-depth technical research us
 
 The Multi-Agent Deep Researcher orchestrates three specialized AI agents working in concert with Tavily's search capabilities to create a powerful research system. Each agent has specific responsibilities and communicates with others through a structured protocol.
 
+## Huggingface Space: https://huggingface.co/spaces/Agents-MCP-Hackathon/multi-agent_deep-research
+
 ## System Architecture
 
 ### Research Flow Diagram
